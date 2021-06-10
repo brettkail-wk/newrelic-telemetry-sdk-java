@@ -55,13 +55,55 @@ public class Java11HttpPoster implements HttpPoster {
       var req = builder.build();
 
       var response =
-          httpClient.send(
+          sendWithRetry(
               req, java.net.http.HttpResponse.BodyHandlers.ofString(Charset.defaultCharset()));
 
       return toSdkResponse(response);
     } catch (URISyntaxException | InterruptedException e) {
       throw new IOException(e);
     }
+  }
+
+  /**
+   * @param req a retryable request
+   */
+  private <T> java.net.http.HttpResponse<T> sendWithRetry(
+      HttpRequest req,
+      java.net.http.HttpResponse.BodyHandler<T> handler)
+        throws IOException, InterruptedException {
+    IOException first = null;
+    int attempt = 0;
+    for (;;) {
+      try {
+        return httpClient.send(req, handler);
+      } catch (IOException e) {
+        attempt++;
+        if (attempt < 2 && isRetryable(e)) {
+          if (first == null) {
+            first = e;
+          } else {
+            first.addSuppressed(e);
+          }
+          continue;
+        }
+
+        if (first != null) {
+          e.addSuppressed(first);
+        }
+        throw e;
+      }
+    }
+  }
+
+  private boolean isRetryable(Throwable t) {
+    for (Throwable cause = t; cause != null; cause = cause.getCause()) {
+      // Caused by: java.io.IOException: Connection reset by peer
+      //  at java.base/sun.nio.ch.FileDispatcherImpl.read0(Native Method)
+      if (cause.getClass() == IOException.class) {
+        return true;
+      }
+    }
+    return false;
   }
 
   public static HttpResponse toSdkResponse(java.net.http.HttpResponse actual) {
